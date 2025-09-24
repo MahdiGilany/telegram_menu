@@ -118,8 +118,8 @@ class TelegramMenuSession:
         if not issubclass(self.navigation_handler_class, NavigationHandler):
             raise NavigationException("navigation_handler_class must be a NavigationHandler!")
 
-        if not self.scheduler.running:
-            self.scheduler.start()
+        # if not self.scheduler.running:
+        #     self.scheduler.start()
         if polling:
             self.application.run_polling(stop_signals=stop_signals)
 
