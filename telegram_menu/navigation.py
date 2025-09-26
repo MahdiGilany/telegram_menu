@@ -239,8 +239,8 @@ class TelegramMenuSession:
 class NavigationHandler:
     """Navigation handler for Telegram application."""
 
-    POLL_DEADLINE = 10  # seconds
-    MESSAGE_CHECK_TIMEOUT = 10  # seconds
+    POLL_DEADLINE = 20  # seconds
+    MESSAGE_CHECK_TIMEOUT = 120  # seconds
     CONNECTION_POOL_SIZE = 8
 
     def __init__(self, bot: Bot, chat: Chat, scheduler: BaseScheduler) -> None:
