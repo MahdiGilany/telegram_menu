@@ -61,16 +61,16 @@ class ActionAppMessage(BaseMessage):
 class ProductDetailMessage(BaseMessage):
     """نمایش جزئیات یک محصول / سرویس به همراه دکمه سفارش"""
 
-    def __init__(self, navigation: MyNavigationHandler, title: str, description: str, details: Optional[str] = None, sample_price: Optional[str] = None, update_callback: Optional[List[Callable]] = None):
+    def __init__(self, navigation: MyNavigationHandler, title: str, description: str, details: Optional[str] = None, update_callback: Optional[List[Callable]] = None):
         label = f"detail:{title}"
         super().__init__(navigation, label, notification=True)
         self.title = title
         self.description = description
-        self.sample_price = sample_price
+        self.sample_price = None
 
         # دکمه‌ها: سفارش، بازگشت، خانه
         self.add_button(label="🛒 سفارش", callback=self.action_order)
-        self.add_button(label="ℹ️ جزئیات", callback=ActionAppMessage(navigation, details))
+        self.add_button(label="اطلاعات تکمیلی", callback=ActionAppMessage(navigation, details))
         self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
         self.add_button(label="🏠 خانه", callback=navigation.goto_home)
 
@@ -99,50 +99,42 @@ class GiftCardsMenuMessage(BaseMessage):
     def __init__(self, navigation: MyNavigationHandler, update_callback: Optional[List[Callable]] = None):
         super().__init__(navigation, GiftCardsMenuMessage.LABEL, notification=False)
 
-        products = [
-            (
-                "Apple Gift Card",
-                "گیفت‌کارت اپل — قابل استفاده در App Store و Apple ID.",
-                "جزئیات Apple Gift Card به زودی اضافه می‌شود.",
-                "از 10 تا 200 دلار"
-            ),
-            (
-                "Google Play",
-                "گیفت‌کارت گوگل‌پلی — شارژ حساب گوگل‌پلی.",
-                "جزئیات Google Play به زودی اضافه می‌شود.",
-                "از 10 تا 100 دلار"
-            ),
-            (
-                "PlayStation",
-                "گیفت‌کارت پلی‌استیشن — شارژ کیف پول PSN.",
-                "جزئیات PlayStation به زودی اضافه می‌شود.",
-                "از 10 تا 100 دلار"
-            ),
-            (
-                "Xbox",
-                "گیفت‌کارت ایکس‌باکس — شارژ کیف پول Xbox.",
-                "جزئیات Xbox به زودی اضافه می‌شود.",
-                "از 10 تا 100 دلار"
-            ),
-            (
-                "Steam",
-                "گیفت‌کارت استیم — برای خرید بازی‌ها و آیتم‌ها.",
-                "جزئیات Steam به زودی اضافه می‌شود.",
-                "از 5 تا 100 دلار"
-            ),
-            (
-                "Prepaid Master/Visa",
-                "کارت‌های پیش‌پرداخت مستر/ویزا — قابل استفاده در وب‌سایت‌هایی که کارت‌های بین‌المللی قبول می‌کنند.",
-                "جزئیات Prepaid Master/Visa به زودی اضافه می‌شود.",
-                "متغیر"
-            )
-        ]
+        resources_path = os.path.join(Path(ROOT_FOLDER).parent, "resources")
 
-        for title, desc, details, price in products:
+        # محصولات: key = نام فایل / display = عنوانی که کاربر می‌بینه
+        products = {
+            "apple_gift": "Apple Gift Card",
+            "google_play": "Google Play",
+            "playstation": "PlayStation",
+            "xbox": "Xbox",
+            "steam": "Steam",
+            "prepaid_card": "Prepaid Master/Visa"
+        }
+
+        def load_text(file_name: str) -> str:
+            """خواندن متن از فایل در resources"""
+            file_path = os.path.join(resources_path, file_name)
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return f.read().strip()
+            return "جزئیات به زودی اضافه می‌شود."
+
+        for key, display_name in products.items():
+            # فایل‌ها: مثلا apple_gift_desc.txt و apple_gift_details.txt
+            desc = load_text(f"{key}_desc.txt")
+            details = load_text(f"{key}_details.txt")
+
             self.add_button(
-                label=title,
-                callback=ProductDetailMessage(navigation, title, desc, details, price, update_callback)
+                label=display_name,  # اسم محصول که کاربر می‌بینه
+                callback=ProductDetailMessage(
+                    navigation,
+                    display_name,  # عنوانی که وارد صفحه جزئیات میشه
+                    desc,
+                    details,
+                    update_callback  # price حذف شد
+                )
             )
+
 
         self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
         self.add_button(label="🏠 خانه", callback=navigation.goto_home)
@@ -165,42 +157,38 @@ class AccountsMenuMessage(BaseMessage):
     def __init__(self, navigation: MyNavigationHandler, update_callback: Optional[List[Callable]] = None):
         super().__init__(navigation, AccountsMenuMessage.LABEL, notification=False)
 
-        # می‌تونید جزییات طولانی رو از فایل txt بخونید
-        with open(os.path.join(Path(ROOT_FOLDER).parent, "resources", "paypal_details.txt"), "r", encoding="utf-8") as f:
-            paypal_details = f.read()
+        resources_path = os.path.join(Path(ROOT_FOLDER).parent, "resources")
 
-        accounts = [
-            (
-                "PayPal",
-                "باز و فعال‌سازی حساب پی‌پل — مناسب برای دریافت و ارسال ارز دلاری.",
-                paypal_details,
-                "خدمات افتتاح/فعالسازی"
-            ),
-            (
-                "Wirex",
-                "حساب و کارت‌های Wirex — امکانات ارزهای دیجیتال و کارت‌های فیزیکی.",
-                "جزئیات Wirex به زودی اضافه می‌شود.",
-                "متغیر"
-            ),
-            (
-                "MasterCard ترکیه",
-                "صدور کارت مسترکارت ترکیه — مناسب برای پرداخت‌های بین‌المللی و سرویس‌های محلی ترکیه.",
-                "جزئیات MasterCard ترکیه به زودی اضافه می‌شود.",
-                "متغیر"
-            ),
-            (
-                "Wise (TransferWise)",
-                "افتتاح حساب Wise برای انتقال ارزی و دریافت حواله‌های بین‌المللی.",
-                "جزئیات Wise به زودی اضافه می‌شود.",
-                "متغیر"
-            )
-        ]
+        # لیست اکانت‌ها: key = نام فایل / display = عنوان منو
+        accounts = {
+            "paypal": "PayPal",
+            "wirex": "Wirex",
+            "mastercard": "MasterCard 🇹🇷",
+            "wise": "Wise (TransferWise)"
+        }
 
-        # تغییر در حلقه: حالا ۴ تا پارامتر می‌گیره (title, desc, details, price)
-        for title, desc, details, price in accounts:
+        def load_text(file_name: str) -> str:
+            """خواندن متن از فایل در resources"""
+            file_path = os.path.join(resources_path, file_name)
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return f.read().strip()
+            return "جزئیات به زودی اضافه می‌شود."
+
+        for key, display_name in accounts.items():
+            # فایل‌ها: مثلا paypal_desc.txt و paypal_details.txt
+            desc = load_text(f"{key}_desc.txt")
+            details = load_text(f"{key}_details.txt")
+
             self.add_button(
-                label=title,
-                callback=ProductDetailMessage(navigation, title, desc, details, price, update_callback)
+                label=display_name,  # چیزی که کاربر می‌بینه
+                callback=ProductDetailMessage(
+                    navigation,
+                    display_name,   # عنوانی که به صفحه جزئیات میره
+                    desc,
+                    details,
+                    update_callback,  # price حذف شد
+                )
             )
 
         self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
@@ -224,37 +212,39 @@ class PaymentsMenuMessage(BaseMessage):
     def __init__(self, navigation: MyNavigationHandler, update_callback: Optional[List[Callable]] = None):
         super().__init__(navigation, PaymentsMenuMessage.LABEL, notification=False)
 
-        payments = [
-            (
-                "پرداخت شهریه دانشگاه",
-                "پرداخت شهریه و fee اپلیکیشن برای دانشگاه‌ها و کالج‌های خارج از کشور.",
-                "مدارک موردنیاز: اطلاعات دانشجویی + فاکتور دانشگاه. ⏳مدت زمان: ۱-۳ روز کاری.",
-                "بسته به مبلغ"
-            ),
-            (
-                "خرید سرویس‌های SaaS",
-                "خرید اشتراک ChatGPT, Adobe, Canva, ... و سایر سرویس‌ها.",
-                "مدارک موردنیاز: اکانت یا ایمیل. ⏳مدت زمان: فوری تا ۲۴ ساعت.",
-                "بسته به سرویس"
-            ),
-            (
-                "بلیط هواپیما / هتل",
-                "پرداخت‌های بین‌المللی برای بلیط و هتل.",
-                "مدارک موردنیاز: مشخصات رزرو. ⏳مدت زمان: همان روز.",
-                "بسته به رزرو"
-            ),
-            (
-                "تبدیل درآمد ارزی به ریال",
-                "تبدیل درآمدهای ارزی ارسال شده به حساب شما به ریال.",
-                "مدارک موردنیاز: اطلاعات حساب مقصد. ⏳مدت زمان: ۱ روز کاری.",
-                "نرخ روز"
-            )
-        ]
 
-        for title, desc, details, price in payments:
+        resources_path = os.path.join(Path(ROOT_FOLDER).parent, "resources")
+
+        # کلید = نام فایل / نمایش‌نام = چیزی که توی منو نشون داده میشه
+        payments = {
+            "university_fee": "پرداخت شهریه دانشگاه",
+            "saas_purchase": "خرید سرویس‌های SaaS",
+            "flight_hotel": "بلیط هواپیما / هتل",
+            "fx_to_rial": "تبدیل درآمد ارزی به ریال"
+        }
+
+        def load_text(file_name: str) -> str:
+            """خواندن متن از فایل در resources"""
+            file_path = os.path.join(resources_path, file_name)
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return f.read().strip()
+            return "جزئیات به زودی اضافه می‌شود."
+
+        for key, display_name in payments.items():
+            # فایل‌ها: مثلا university_fee_desc.txt و university_fee_details.txt
+            desc = load_text(f"{key}_desc.txt")
+            details = load_text(f"{key}_details.txt")
+
             self.add_button(
-                label=title,
-                callback=ProductDetailMessage(navigation, title, desc, details, price, update_callback)
+                label=display_name,
+                callback=ProductDetailMessage(
+                    navigation,
+                    display_name,  # عنوانی که وارد صفحه جزئیات میشه
+                    desc,
+                    details,
+                    update_callback  # price حذف شد
+                )
             )
 
         self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
@@ -285,7 +275,7 @@ class ServicesMenuMessage(BaseMessage):
         self.add_button(label="💳 گیفت‌کارت‌ها", callback=gift_card)
         self.add_button(label="🏦 حساب‌های بین‌المللی", callback=accounts)
         self.add_button(label="💵 پرداخت‌های ارزی", callback=payments)
-        self.add_button(label="✨ خدمات ویژه",callback=ProductDetailMessage(navigation,"خدمات ویژه","تبدیل درآمد، کارت مجازی و خدمات اختصاصی.","جزئیات خدمات ویژه به زودی اضافه می‌شود.","متغیر",update_callback))
+        self.add_button(label="✨ خدمات ویژه",callback=ProductDetailMessage(navigation,"خدمات ویژه","تبدیل درآمد، کارت مجازی و خدمات اختصاصی.","جزئیات خدمات ویژه به زودی اضافه می‌شود.",update_callback))
 
         self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
         self.add_button(label="🏠 خانه", callback=navigation.goto_home)
