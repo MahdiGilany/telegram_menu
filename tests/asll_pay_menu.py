@@ -106,8 +106,8 @@ class GiftCardsMenuMessage(BaseMessage):
             "apple_gift": "Apple Gift Card",
             "google_play": "Google Play",
             "playstation": "PlayStation",
-            "xbox": "Xbox",
-            "steam": "Steam",
+            # "xbox": "Xbox",
+            # "steam": "Steam",
             "prepaid_card": "Prepaid Master/Visa"
         }
 
