@@ -354,8 +354,8 @@ class ProductDetailMessage(BaseMessage):
         if details:
             # Use ActionAppMessage instead of btype=ButtonType.MESSAGE
             self.add_button("اطلاعات تکمیلی", callback=ActionAppMessage(navigation, self.details))
-        self.add_button("Back", callback=None)
-        self.add_button("Home", callback=None)
+        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
+        self.add_button(label="🏠 خانه", callback=navigation.goto_home)
 
     def _details_msg(self) -> str:
         return self.details or "—"
@@ -416,8 +416,8 @@ class GiftCardsMenuMessage(BaseMessage):
                 callback=ProductDetailMessage(navigation, display, desc, details, service_key=key),
             )
 
-        self.add_button("Back", callback=None)
-        self.add_button("Home", callback=None)
+        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
+        self.add_button(label="🏠 خانه", callback=navigation.goto_home)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         return "یکی از گیفت‌کارت‌ها را انتخاب کنید:"
@@ -440,8 +440,8 @@ class AccountsMenuMessage(BaseMessage):
             desc, details = _load_text(resources, key)
             self.add_button(display, callback=ProductDetailMessage(navigation, display, desc, details, service_key=key))
 
-        self.add_button("Back", callback=None)
-        self.add_button("Home", callback=None)
+        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
+        self.add_button(label="🏠 خانه", callback=navigation.goto_home)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         return "کدام نوع حساب بین‌المللی را می‌خواهید؟"
@@ -464,8 +464,8 @@ class PaymentsMenuMessage(BaseMessage):
             desc, details = _load_text(resources, key)
             self.add_button(display, callback=ProductDetailMessage(navigation, display, desc, details, service_key=key))
 
-        self.add_button("Back", callback=None)
-        self.add_button("Home", callback=None)
+        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
+        self.add_button(label="🏠 خانه", callback=navigation.goto_home)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         return "نوع پرداخت ارزی خود را انتخاب کنید:"
@@ -491,8 +491,8 @@ class ServicesMenuMessage(BaseMessage):
             ),
         )
 
-        self.add_button("Back", callback=None)
-        self.add_button("Home", callback=None)
+        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
+        self.add_button(label="🏠 خانه", callback=navigation.goto_home)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         return "خدمات اصلی اصل‌پی را ببینید:"
@@ -505,8 +505,8 @@ class LearningMenuMessage(BaseMessage):
         super().__init__(navigation, label=self.LABEL, notification=False)
         self.add_button("آموزش خرید", callback=self._buy_guide, btype=ButtonType.MESSAGE)
         self.add_button("آموزش امنیت", callback=self._security_guide, btype=ButtonType.MESSAGE)
-        self.add_button("Back", callback=None)
-        self.add_button("Home", callback=None)
+        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
+        self.add_button(label="🏠 خانه", callback=navigation.goto_home)
 
     def _buy_guide(self) -> str:
         return "برای خرید: سرویس را انتخاب کنید → «🛒 سفارش» → پرداخت و ارسال رسید به ادمین."
@@ -525,8 +525,8 @@ class ContactMenuMessage(BaseMessage):
         super().__init__(navigation, label=self.LABEL, notification=False)
         self.add_button("ارسال پیام به پشتیبانی", callback=self._contact, btype=ButtonType.MESSAGE)
         self.add_button("تماس ادمین", callback=self._admin, btype=ButtonType.MESSAGE)
-        self.add_button("Back", callback=None)
-        self.add_button("Home", callback=None)
+        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
+        self.add_button(label="🏠 خانه", callback=navigation.goto_home)
 
     def _contact(self) -> str:
         return "پیام شما به پشتیبانی ارسال شد. در ساعات کاری پاسخ داده می‌شود."
