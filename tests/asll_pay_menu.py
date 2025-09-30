@@ -1,12 +1,35 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# asll_pay_menu.py — order flow with correct Back/Home labels (Persian + emoji)
+# asll_pay_menu.py — fixed order flow using BaseMessage callbacks (not callables)
+#
+# NOTE:
+# - This version aligns with the framework’s expected callback types:
+#   for buttons that should open a new UI, the callback is a BaseMessage INSTANCE
+#   (not a method). See models.py and navigation.py for how callbacks are handled.
+#   :contentReference[oaicite:0]{index=0}  :contentReference[oaicite:1]{index=1}
+#
+# - "🛒 سفارش" now opens either:
+#     • an inline amount/region selector (for items needing a user amount/option), or
+#     • a final inline order summary (for fixed-price items).
+#
+# - For percent-based services (مثل Apple/Google gift) قیمت = مبلغ انتخابی + درصد.
+#   برای PlayStation: US ~5% زیر قیمت اسمی، سایر ریجن‌ها ~5% بالاتر.
+#   برای Prepaid (Visa/Master): کارمزد پلّه‌ای ۵٪..۱۰٪ روی مبلغ انتخابی.
+#
+# - پس از انتخاب، یک پیام خلاصه سفارش (inline) نشان می‌دهد:
+#   مبلغ نهایی دلاری + شماره‌حساب پرداخت + یادآوری ارسال رسید به @asll_pay
+#
+# - شماره حساب از متغیر محیطی ASLLPAY_ACCOUNT_NO خوانده می‌شود (پیش‌فرض: "—").
+#
+# - برای افزودن موارد جدید، فقط PRICING و منوها را آپدیت کنید.
 
 import os
 import datetime
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from telegram import ReplyKeyboardMarkup
 
 from telegram.ext._callbackcontext import CallbackContext
 from telegram.ext._utils.types import BD, BT, CD, UD
@@ -108,24 +131,15 @@ def compute_total(service_key: str, base_amount: Optional[float] = None, region:
     return None, "نیاز به استعلام قیمت"
 
 
-# ========= Navigation =========
+# ========= Messages =========
 class MyNavigationHandler(_BaseNav):
-    """Extend to ensure Back/Home actions are available."""
-    # async def goto_back(self) -> int:
-    #     # Use built-in back if available; fallback to selecting a 'Back' button if framework requires.
-    #     return await super().goto_back()
-
-    # async def goto_home(self) -> int:
-    #     # Go to the Start/root screen (label set by StartMessage)
-    #     return await self.select_menu_button(StartMessage.LABEL)
-    
+    """Optional extension if needed; kept for symmetry with the user's codebase."""
     async def goto_back(self) -> int:
-        """Do Go Back logic."""
         return await self.select_menu_button("Back")
-    
-# ========= Inline Messages (no Back/Home needed here) =========
+
+
 class OrderSummaryMessage(BaseMessage):
-    """Inline final summary (inlined=True)."""
+    """Inline final summary (inlined=True so it appears as an app message)."""
     def __init__(
         self,
         navigation: MyNavigationHandler,
@@ -143,7 +157,10 @@ class OrderSummaryMessage(BaseMessage):
         self.service_key = service_key
         self.base_amount = base_amount
         self.extra = extra
-        self.keyboard = [[]]  # inline summary, no buttons
+
+        # Inline summary: keep it simple, no navigation changes required here.
+        # (Inline messages are handled by app_message_button_callback)
+        self.keyboard = [[]]  # no buttons
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         lines: List[str] = [f"<b>نهایی‌سازی سفارش — {self.title}</b>"]
@@ -165,6 +182,7 @@ class AmountSelectorInline(BaseMessage):
     """
     Inline selector to collect options WITHOUT creating a new menu.
     - Can optionally ask for region (PlayStation).
+    - Builds amount buttons dynamically so each button callback is a BaseMessage INSTANCE.
     """
     def __init__(
         self,
@@ -180,9 +198,12 @@ class AmountSelectorInline(BaseMessage):
         self.service_key = service_key
         self.denoms = denoms
         self.region_prompt = region_prompt
-        self.region_selected: Optional[str] = None
+        self.region_selected: Optional[str] = None  # "US" or "OTHER"
         self.extra = extra
 
+        # keyboard will be built in update() each time (dynamic)
+
+    # --- Small actions to toggle region. Return strings (status) so framework shows a toast and then we edit.
     def _set_region_us(self) -> str:
         self.region_selected = "US"
         return "ریجن روی آمریکا تنظیم شد. یکی از مبالغ را انتخاب کنید."
@@ -192,9 +213,14 @@ class AmountSelectorInline(BaseMessage):
         return "ریجن روی سایر کشورها تنظیم شد. یکی از مبالغ را انتخاب کنید."
 
     def _build_amount_buttons(self) -> List[List[MenuButton]]:
+        """
+        Create per-amount buttons whose callback is an OrderSummaryMessage INSTANCE
+        (so selecting a button opens an inline summary directly).
+        """
         rows: List[List[MenuButton]] = []
         row: List[MenuButton] = []
         for d in self.denoms:
+            # compute price & note with current region
             price, note = compute_total(
                 self.service_key,
                 base_amount=float(d),
@@ -209,8 +235,10 @@ class AmountSelectorInline(BaseMessage):
                 base_amount=float(d),
                 extra=self.extra,
             )
+            # each amount opens a summary (BaseMessage)
             btn = MenuButton(f"{d}$", callback=summary, btype=ButtonType.NOTIFICATION)
             row.append(btn)
+            # Arrange 4 per row for inline
             if len(row) == 4:
                 rows.append(row)
                 row = []
@@ -219,7 +247,10 @@ class AmountSelectorInline(BaseMessage):
         return rows
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
+        # Build dynamic inline keyboard
         keyboard: List[List[MenuButton]] = []
+
+        # 1) Region controls (if applicable)
         if self.region_prompt:
             keyboard.append(
                 [
@@ -227,12 +258,18 @@ class AmountSelectorInline(BaseMessage):
                     MenuButton("🌍 Other", callback=self._set_region_other, btype=ButtonType.NOTIFICATION),
                 ]
             )
+
+        # 2) Amount buttons (depend on selected region if needed)
         keyboard.extend(self._build_amount_buttons())
+
+        # 3) Helper/message buttons
         keyboard.append(
             [MenuButton("🔢 راهنمای مبلغ دلخواه", callback=self._help_custom_amount, btype=ButtonType.MESSAGE)]
         )
+
         self.keyboard = keyboard
 
+        # Content text
         lines = [f"انتخاب مبلغ — {self.title}"]
         if self.region_prompt:
             if self.region_selected == "US":
@@ -250,12 +287,49 @@ class AmountSelectorInline(BaseMessage):
             f"{ADMIN_USER} هماهنگ کنید. محاسبه‌ی نهایی با همین فرمول انجام می‌شود."
         )
 
+    async def text_input(self, text: str, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> None:
+        """
+        Optional: allow user to type a custom USD amount (e.g., '37').
+        We'll parse it and send an inline OrderSummaryMessage.
+        """
+        try:
+            amt = float(text.replace("$", "").strip())
+        except Exception:
+            await self.navigation.send_message("لطفاً مبلغ دلاری معتبر وارد کنید (مثلاً 37 یا 37$).", notification=True)
+            return
+        price, note = compute_total(
+            self.service_key, base_amount=amt, region=self.region_selected if self.region_selected else None
+        )
+        summary = OrderSummaryMessage(
+            self.navigation, self.title, price, note, self.service_key, base_amount=amt, extra=self.extra
+        )
+        # Send as inline app message
+        await self.navigation._send_app_message(summary, label="custom_amount", context=context)
+
+
+class ActionAppMessage(BaseMessage):
+    """Single action message used for showing static content (like details)."""
+    LABEL = "action"
+
+    def __init__(self, navigation: MyNavigationHandler, shared_content: Optional[str] = None) -> None:
+        super().__init__(
+            navigation,
+            ActionAppMessage.LABEL,
+            expiry_period=datetime.timedelta(seconds=5),
+            inlined=True,
+        )
+        self.shared_content = shared_content
+
+    def update(self) -> str:
+        return self.shared_content or "تعریف نشده"
+
 
 # ---------- Product Detail (menu level) ----------
 class ProductDetailMessage(BaseMessage):
     """
     Menu message describing a product/service with a '🛒 سفارش' button.
-    The '🛒 سفارش' button points to a BaseMessage instance.
+    The '🛒 سفارش' button now points to a BaseMessage instance (NOT a method),
+    per framework expectations.
     """
     def __init__(
         self,
@@ -270,14 +344,18 @@ class ProductDetailMessage(BaseMessage):
         self.description = description
         self.details = details
         self.service_key = (service_key or title.lower().replace(" ", "_")).strip()
+
+        # Build the correct "order target" as a BaseMessage instance
         self._order_target = self._build_order_target()
 
-        # ✅ Restore Persian + emoji labels for Back/Home with proper callbacks
+        # Buttons (menu-level)
+        # IMPORTANT: callback is a BaseMessage instance to open either an inline selector or an inline summary
         self.add_button("🛒 سفارش", callback=self._order_target)
         if details:
-            self.add_button("اطلاعات تکمیلی", callback=self._details_msg, btype=ButtonType.MESSAGE)
-        self.add_button("⬅️ بازگشت", callback=navigation.goto_back)
-        self.add_button("🏠 خانه", callback=navigation.goto_home)
+            # Use ActionAppMessage instead of btype=ButtonType.MESSAGE
+            self.add_button("اطلاعات تکمیلی", callback=ActionAppMessage(navigation, self.details))
+        self.add_button("Back", callback=None)
+        self.add_button("Home", callback=None)
 
     def _details_msg(self) -> str:
         return self.details or "—"
@@ -286,6 +364,7 @@ class ProductDetailMessage(BaseMessage):
         key = self.service_key
         strat = PRICING.get(key, {"type": "quote_needed"})["type"]
 
+        # Services needing user amount/options → inline selector
         if strat == "percent":
             return AmountSelectorInline(self.navigation, self.title, key, COMMON_DENOMS_SMALL, region_prompt=False, extra=self.details)
         if strat == "psn_region":
@@ -293,10 +372,12 @@ class ProductDetailMessage(BaseMessage):
         if strat == "prepaid_tier":
             return AmountSelectorInline(self.navigation, self.title, key, PREPAID_DENOMS, region_prompt=False, extra=self.details)
 
+        # Fixed-price service → inline final summary immediately
         if strat == "fixed":
             price, note = compute_total(key)
             return OrderSummaryMessage(self.navigation, self.title, price, note, key, extra=self.details)
 
+        # Quote needed
         return OrderSummaryMessage(self.navigation, self.title, None, "قیمت‌گذاری این مورد نیاز به استعلام دارد.", key, extra=self.details)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
@@ -304,7 +385,7 @@ class ProductDetailMessage(BaseMessage):
         return txt
 
 
-# ---------- Helpers for resources ----------
+# ---------- Category Menus (menu level) ----------
 def _read_file_if_exists(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip() if path.exists() else ""
 
@@ -315,7 +396,6 @@ def _load_text(resources_dir: Path, stem: str) -> Tuple[str, str]:
     return desc, details
 
 
-# ---------- Category Menus (with restored Back/Home labels) ----------
 class GiftCardsMenuMessage(BaseMessage):
     LABEL = "💳 گیفت‌کارت‌ها"
 
@@ -336,8 +416,8 @@ class GiftCardsMenuMessage(BaseMessage):
                 callback=ProductDetailMessage(navigation, display, desc, details, service_key=key),
             )
 
-        self.add_button("⬅️ بازگشت", callback=navigation.goto_back)
-        self.add_button("🏠 خانه", callback=navigation.goto_home)
+        self.add_button("Back", callback=None)
+        self.add_button("Home", callback=None)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         return "یکی از گیفت‌کارت‌ها را انتخاب کنید:"
@@ -360,8 +440,8 @@ class AccountsMenuMessage(BaseMessage):
             desc, details = _load_text(resources, key)
             self.add_button(display, callback=ProductDetailMessage(navigation, display, desc, details, service_key=key))
 
-        self.add_button("⬅️ بازگشت", callback=navigation.goto_back)
-        self.add_button("🏠 خانه", callback=navigation.goto_home)
+        self.add_button("Back", callback=None)
+        self.add_button("Home", callback=None)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         return "کدام نوع حساب بین‌المللی را می‌خواهید؟"
@@ -384,8 +464,8 @@ class PaymentsMenuMessage(BaseMessage):
             desc, details = _load_text(resources, key)
             self.add_button(display, callback=ProductDetailMessage(navigation, display, desc, details, service_key=key))
 
-        self.add_button("⬅️ بازگشت", callback=navigation.goto_back)
-        self.add_button("🏠 خانه", callback=navigation.goto_home)
+        self.add_button("Back", callback=None)
+        self.add_button("Home", callback=None)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         return "نوع پرداخت ارزی خود را انتخاب کنید:"
@@ -411,8 +491,8 @@ class ServicesMenuMessage(BaseMessage):
             ),
         )
 
-        self.add_button("⬅️ بازگشت", callback=navigation.goto_back)
-        self.add_button("🏠 خانه", callback=navigation.goto_home)
+        self.add_button("Back", callback=None)
+        self.add_button("Home", callback=None)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         return "خدمات اصلی اصل‌پی را ببینید:"
@@ -425,8 +505,8 @@ class LearningMenuMessage(BaseMessage):
         super().__init__(navigation, label=self.LABEL, notification=False)
         self.add_button("آموزش خرید", callback=self._buy_guide, btype=ButtonType.MESSAGE)
         self.add_button("آموزش امنیت", callback=self._security_guide, btype=ButtonType.MESSAGE)
-        self.add_button("⬅️ بازگشت", callback=navigation.goto_back)
-        self.add_button("🏠 خانه", callback=navigation.goto_home)
+        self.add_button("Back", callback=None)
+        self.add_button("Home", callback=None)
 
     def _buy_guide(self) -> str:
         return "برای خرید: سرویس را انتخاب کنید → «🛒 سفارش» → پرداخت و ارسال رسید به ادمین."
@@ -445,8 +525,8 @@ class ContactMenuMessage(BaseMessage):
         super().__init__(navigation, label=self.LABEL, notification=False)
         self.add_button("ارسال پیام به پشتیبانی", callback=self._contact, btype=ButtonType.MESSAGE)
         self.add_button("تماس ادمین", callback=self._admin, btype=ButtonType.MESSAGE)
-        self.add_button("⬅️ بازگشت", callback=navigation.goto_back)
-        self.add_button("🏠 خانه", callback=navigation.goto_home)
+        self.add_button("Back", callback=None)
+        self.add_button("Home", callback=None)
 
     def _contact(self) -> str:
         return "پیام شما به پشتیبانی ارسال شد. در ساعات کاری پاسخ داده می‌شود."
@@ -467,13 +547,12 @@ class StartMessage(BaseMessage):
         self.add_button("آموزش و راهنما 📚", callback=LearningMenuMessage(navigation))
         self.add_button("خدمات ما 🛠️", callback=ServicesMenuMessage(navigation))
         self.add_button("پشتیبانی 👤", callback=ContactMenuMessage(navigation))
-        # Start screen itself doesn’t need Back/Home
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         return "🌍💳 Asll Pay | اصل‌پی 💳🌍\n\nبه ربات اصل‌پی خوش آمدید!\nاز منو گزینه موردنظر را انتخاب کنید."
 
 
-# ========= Logger helper (optional) =========
+# ========= Logger helper (optional, unchanged) =========
 def init_logger(current_logger: str) -> logging.Logger:
     log_formatter = logging.Formatter(
         fmt="%(asctime)s [%(name)s] [%(levelname)s]  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
