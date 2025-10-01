@@ -26,8 +26,9 @@
 import os
 import datetime
 import logging
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 
 from telegram import ReplyKeyboardMarkup
 
@@ -177,13 +178,14 @@ class OrderSummaryMessage(BaseMessage):
             lines.append(f"\nاطلاعات تکمیلی:\n{self.extra}")
         return "\n".join(lines)
 
-
 class AmountSelectorInline(BaseMessage):
     """
-    Inline selector to collect options WITHOUT creating a new menu.
-    - Can optionally ask for region (PlayStation).
-    - Builds amount buttons dynamically so each button callback is a BaseMessage INSTANCE.
+    انتخاب مبلغ به‌صورت inline (بدون ساخت منوی جدید).
+    نکته‌ی مهم: callback دکمه‌های inline باید «تابعی باشد که متن برمی‌گرداند»،
+    و نباید آبجکت پیام برگردانیم (تا خطای JSON serialization پیش نیاید).
+    این کلاس state داخلی را نگه می‌دارد و با update_callback پیام را رفرش می‌کند.
     """
+
     def __init__(
         self,
         navigation: MyNavigationHandler,
@@ -191,54 +193,96 @@ class AmountSelectorInline(BaseMessage):
         service_key: str,
         denoms: List[int],
         region_prompt: bool = False,
-        extra: Optional[str] = None,
+        default_region: Optional[str] = None,
+        update_callback: Optional[List[Callable]] = None,
     ):
-        super().__init__(navigation, label=f"amount_selector:{service_key}", inlined=True, notification=False)
+        uniq = f"{service_key}:{default_region or 'ANY'}:{int(time.time())}"
+        super().__init__(navigation, label=f"amount_selector:{uniq}", inlined=True, notification=False)
+
         self.title = title
         self.service_key = service_key
         self.denoms = denoms
         self.region_prompt = region_prompt
-        self.region_selected: Optional[str] = None  # "US" or "OTHER"
-        self.extra = extra
+        self.region_selected: Optional[str] = default_region  # "US" | "OTHER" | None
 
-        # keyboard will be built in update() each time (dynamic)
+        # State برای نمایش خلاصه/انتخاب مبلغ
+        self.selected_amount: Optional[float] = None
+        self._mode: str = "pick"           # "pick" | "summary"
+        self._price: Optional[float] = None
+        self._note: str = ""
 
-    # --- Small actions to toggle region. Return strings (status) so framework shows a toast and then we edit.
-    def _set_region_us(self) -> str:
-        self.region_selected = "US"
-        return "ریجن روی آمریکا تنظیم شد. یکی از مبالغ را انتخاب کنید."
+        # ثبت update_callback تا بعد از هر اکشن بتونیم پیام رو refresh کنیم (مثل نمونه‌ی شما)
+        self._update_callback = update_callback
+        if isinstance(update_callback, list):
+            update_callback.append(self.app_update_display)
 
-    def _set_region_other(self) -> str:
-        self.region_selected = "OTHER"
-        return "ریجن روی سایر کشورها تنظیم شد. یکی از مبالغ را انتخاب کنید."
+    # ---- Hooks برای رفرش UI پس از اکشن‌ها ----
+    async def app_update_display(self) -> None:
+        if await self.edit_message():
+            self.is_alive()
 
+    # ---- Callbacks: Region selection ----
+    def _make_set_region_cb(self, region_code: str):
+        def _cb() -> str:
+            self.region_selected = region_code
+            self._mode = "pick"
+            return "ریجن تنظیم شد. حالا مبلغ را انتخاب کنید."
+        return _cb
+
+    # ---- Callbacks: pick amount → compute & go summary (return TEXT only) ----
+    def _pick_amount_cb(self, amount: float):
+        def _cb() -> str:
+            self.selected_amount = float(amount)
+            self._price, self._note = compute_total(
+                self.service_key,
+                base_amount=self.selected_amount,
+                region=self.region_selected if self.region_selected else None,
+            )
+            self._mode = "summary"
+            # یک متن کوتاه برای نوتیف؛ UI با app_update_display رفرش می‌شود
+            return f"✅ {_fmt_usd(self.selected_amount)} شما وارد شد."
+        return _cb
+
+    # ---- Callbacks: paid / not paid (return TEXT only) ----
+    def _mark_paid(self) -> str:
+        amount_txt = _fmt_usd(self._price) if self._price is not None else "—"
+        try:
+            # منشن ادمین برای نوتیف
+            self.navigation.send_message(
+                f"🔔 {ADMIN_USER} کاربر اعلام کرد «واریز کردم» برای «{self.title}» به مبلغ {amount_txt}.",
+                notification=True
+            )
+        except Exception as e:
+            logging.warning(f"Failed admin notify: {e}")
+        
+        # بعد از ارسال پیام، حالت برگرده به انتخاب مبلغ
+        self._mode = "pick"
+        self.selected_amount = None
+        self._price = None
+        self._note = ""
+        self.region_selected = None
+        return f"✅ دریافت شد. لطفاً رسید پرداخت را برای ادمین {ADMIN_USER} ارسال کنید."
+
+    def _not_paid(self) -> str:
+        # بعد از ارسال پیام، حالت برگرده به انتخاب مبلغ
+        self._mode = "pick"
+        self.selected_amount = None
+        self._price = None
+        self._note = ""
+        self.region_selected = None
+        return "باشه! هر وقت پرداخت کردید، با «✅ واریز کردم» خبر بدید و رسید را هم بفرستید."
+
+    # ---- Build amount buttons (callbacks are FUNCTIONS returning TEXT) ----
     def _build_amount_buttons(self) -> List[List[MenuButton]]:
-        """
-        Create per-amount buttons whose callback is an OrderSummaryMessage INSTANCE
-        (so selecting a button opens an inline summary directly).
-        """
         rows: List[List[MenuButton]] = []
         row: List[MenuButton] = []
         for d in self.denoms:
-            # compute price & note with current region
-            price, note = compute_total(
-                self.service_key,
-                base_amount=float(d),
-                region=self.region_selected if self.region_selected else None,
+            btn = MenuButton(
+                f"{d}$",
+                callback=self._pick_amount_cb(float(d)),
+                btype=ButtonType.NOTIFICATION
             )
-            summary = OrderSummaryMessage(
-                self.navigation,
-                title=self.title,
-                price_usd=price,
-                note=note,
-                service_key=self.service_key,
-                base_amount=float(d),
-                extra=self.extra,
-            )
-            # each amount opens a summary (BaseMessage)
-            btn = MenuButton(f"{d}$", callback=summary, btype=ButtonType.NOTIFICATION)
             row.append(btn)
-            # Arrange 4 per row for inline
             if len(row) == 4:
                 rows.append(row)
                 row = []
@@ -246,30 +290,45 @@ class AmountSelectorInline(BaseMessage):
             rows.append(row)
         return rows
 
+    # ---- Render UI ----
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
-        # Build dynamic inline keyboard
+        # حالت خلاصه‌ی سفارش
+        if self._mode == "summary":
+            # دکمه‌های پرداخت
+            self.keyboard = [
+                [MenuButton("✅ واریز کردم", callback=self._mark_paid, btype=ButtonType.MESSAGE)],
+                [MenuButton("⌛ هنوز واریز نکردم", callback=self._not_paid)],
+            ]
+            lines: List[str] = [f"<b>سفارش ثبت شد — {self.title}</b>"]
+            if self.selected_amount is not None:
+                lines.append(f"مبلغ انتخابی: {_fmt_usd(self.selected_amount)}")
+            if self._price is not None:
+                lines.append(f"<b>مبلغ پرداخت نهایی:</b> {_fmt_usd(self._price)} ({self._note})")
+                lines.append(f"\n✅ لطفاً مبلغ فوق را به شماره‌حساب زیر واریز کنید:\n<b>{ACCOUNT_NO}</b>")
+                lines.append(f"و سپس <b>رسید</b> را برای ادمین {ADMIN_USER} ارسال نمایید.")
+            else:
+                lines.append("⛳ برای ادامه با ادمین در ارتباط باشید.")
+            return "\n".join(lines)
+
+        # حالت انتخاب مبلغ
         keyboard: List[List[MenuButton]] = []
-
-        # 1) Region controls (if applicable)
-        if self.region_prompt:
-            keyboard.append(
-                [
-                    MenuButton("🇺🇸 US", callback=self._set_region_us, btype=ButtonType.NOTIFICATION),
-                    MenuButton("🌍 Other", callback=self._set_region_other, btype=ButtonType.NOTIFICATION),
-                ]
-            )
-
-        # 2) Amount buttons (depend on selected region if needed)
+        if self.region_prompt and not self.region_selected:
+            # انتخاب ریجن (دکمه‌ها «تابع» دارند که TEXT برمی‌گرداند)
+            keyboard.append([
+                MenuButton("🇺🇸 US", callback=self._make_set_region_cb("US")),
+                MenuButton("🌍 Other", callback=self._make_set_region_cb("OTHER")),
+            ])
+        # دکمه‌های مبلغ
         keyboard.extend(self._build_amount_buttons())
-
-        # 3) Helper/message buttons
-        keyboard.append(
-            [MenuButton("🔢 راهنمای مبلغ دلخواه", callback=self._help_custom_amount, btype=ButtonType.MESSAGE)]
-        )
-
+        # راهنمای مبلغ دلخواه
+        keyboard.append([MenuButton(
+            "🔢 راهنمای مبلغ دلخواه",
+            callback=lambda: "اگر مبلغ موردنظر در لیست نیست، عدد دلاری را به صورت متنی ارسال کنید یا با ادمین "
+                             f"{ADMIN_USER} هماهنگ کنید."
+        )])
         self.keyboard = keyboard
 
-        # Content text
+        # متن توضیحی
         lines = [f"انتخاب مبلغ — {self.title}"]
         if self.region_prompt:
             if self.region_selected == "US":
@@ -277,34 +336,9 @@ class AmountSelectorInline(BaseMessage):
             elif self.region_selected == "OTHER":
                 lines.append("ریجن: 🌍 سایر کشورها (~۵٪ بالاتر از اسمی)")
             else:
-                lines.append("ابتدا ریجن را انتخاب کنید، سپس مبلغ را بزنید.")
+                lines.append("لطفاً ریجن را انتخاب کنید، سپس مبلغ را انتخاب کنید.")
         lines.append("یکی از مبالغ متداول را انتخاب کنید یا راهنمای مبلغ دلخواه را بزنید.")
         return "\n".join(lines)
-
-    def _help_custom_amount(self) -> str:
-        return (
-            "اگر مبلغ موردنظر در لیست نیست، عدد دلاری را به صورت متنی ارسال کنید یا با ادمین "
-            f"{ADMIN_USER} هماهنگ کنید. محاسبه‌ی نهایی با همین فرمول انجام می‌شود."
-        )
-
-    async def text_input(self, text: str, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> None:
-        """
-        Optional: allow user to type a custom USD amount (e.g., '37').
-        We'll parse it and send an inline OrderSummaryMessage.
-        """
-        try:
-            amt = float(text.replace("$", "").strip())
-        except Exception:
-            await self.navigation.send_message("لطفاً مبلغ دلاری معتبر وارد کنید (مثلاً 37 یا 37$).", notification=True)
-            return
-        price, note = compute_total(
-            self.service_key, base_amount=amt, region=self.region_selected if self.region_selected else None
-        )
-        summary = OrderSummaryMessage(
-            self.navigation, self.title, price, note, self.service_key, base_amount=amt, extra=self.extra
-        )
-        # Send as inline app message
-        await self.navigation._send_app_message(summary, label="custom_amount", context=context)
 
 
 class ActionAppMessage(BaseMessage):
@@ -366,19 +400,19 @@ class ProductDetailMessage(BaseMessage):
 
         # Services needing user amount/options → inline selector
         if strat == "percent":
-            return AmountSelectorInline(self.navigation, self.title, key, COMMON_DENOMS_SMALL, region_prompt=False, extra=self.details)
+            return AmountSelectorInline(self.navigation, self.title, key, COMMON_DENOMS_SMALL, region_prompt=False)
         if strat == "psn_region":
-            return AmountSelectorInline(self.navigation, self.title, key, COMMON_DENOMS_SMALL, region_prompt=True, extra=self.details)
+            return AmountSelectorInline(self.navigation, self.title, key, COMMON_DENOMS_SMALL, region_prompt=True)
         if strat == "prepaid_tier":
-            return AmountSelectorInline(self.navigation, self.title, key, PREPAID_DENOMS, region_prompt=False, extra=self.details)
+            return AmountSelectorInline(self.navigation, self.title, key, PREPAID_DENOMS, region_prompt=False)
 
         # Fixed-price service → inline final summary immediately
         if strat == "fixed":
             price, note = compute_total(key)
-            return OrderSummaryMessage(self.navigation, self.title, price, note, key, extra=self.details)
+            return OrderSummaryMessage(self.navigation, self.title, price, note, key)
 
         # Quote needed
-        return OrderSummaryMessage(self.navigation, self.title, None, "قیمت‌گذاری این مورد نیاز به استعلام دارد.", key, extra=self.details)
+        return OrderSummaryMessage(self.navigation, self.title, None, "قیمت‌گذاری این مورد نیاز به استعلام دارد.", key)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         txt = f"<b>{self.title}</b>\n\n{self.description}\n\nبرای سفارش دکمه «🛒 سفارش» را بزنید."
