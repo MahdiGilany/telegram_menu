@@ -57,17 +57,24 @@ PRICING: Dict[str, Dict[str, Any]] = {
     "google_play":  {"type": "percent", "percent": 5.0},
     "playstation":  {"type": "psn_region"},
     "prepaid_card": {"type": "prepaid_tier"},
+    "other_gift":   {"type": "percent", "percent": 5.0},  # ← جدید: سایر گیفت‌کارت‌ها
+
     # Accounts / Fixed
     "paypal":       {"type": "fixed", "amount": 40.0},
     "mastercard":   {"type": "fixed", "amount": 130.0},
+
+    # Payments / Receipts
+    "site_payment": {"type": "percent", "percent": 5.0},   # ← جدید: پرداخت در سایت مورد نظر (+۵٪)
+    "fx_to_rial":   {"type": "percent", "percent": 5.0},   # ← تغییر از quote_needed به +۵٪
+
     # Others require quote
     "wirex":        {"type": "quote_needed"},
     "wise":         {"type": "quote_needed"},
     "university_fee": {"type": "quote_needed"},
     "saas_purchase":  {"type": "quote_needed"},
     "flight_hotel":   {"type": "quote_needed"},
-    "fx_to_rial":     {"type": "quote_needed"},
 }
+
 
 COMMON_DENOMS_SMALL = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100]
 PREPAID_DENOMS = [1, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 250]
@@ -389,6 +396,7 @@ class AmountSelectorInline(BaseMessage):
         user_chat_id = getattr(self.navigation, "chat_id", None)
         user_first   = getattr(self.navigation, "first_name", None) or getattr(self.navigation, "user_first_name", None)
 
+        # نوتیف ادمین با جزئیات گیفت‌کارت (یا هر سرویس درصدی)
         asyncio.create_task(_notify_admin_giftcard(
             self.navigation._bot,
             ADMIN_CHAT_ID,
@@ -401,6 +409,24 @@ class AmountSelectorInline(BaseMessage):
             user_first,
         ))
 
+        # پیام اختصاصی بعد از واریز برای برخی سرویس‌ها
+        if self.service_key == "site_payment":
+            # تاکید: بعد از واریز، اطلاعات ورود سایت را بفرستند
+            self._mode = "done"
+            return (
+                f"✅ دریافت شد. لطفاً رسید پرداخت را برای ادمین {ADMIN_USER} ارسال کنید.\n"
+                "ℹ️ سپس <b>آدرس سایت، نام کاربری و رمز عبور</b> حساب‌تان در آن سایت را هم بفرستید تا پرداخت شما انجام شود."
+            )
+        if self.service_key == "fx_to_rial":
+            # تاکید: روش انتقال ارزی و مرجع تراکنش
+            self._mode = "done"
+            return (
+                f"✅ دریافت شد. لطفاً رسید پرداخت را برای ادمین {ADMIN_USER} ارسال کنید.\n"
+                "ℹ️ لطفاً روش انتقال ارزی (مثلاً Swift/PayPal) و مرجع تراکنش را هم ارسال کنید تا تسویه ریالی انجام شود. "
+                "کارمزد ۵٪ منظور می‌شود."
+            )
+
+        # سایر درصدی‌ها (مثل گیفت‌کارت‌ها)
         self._mode = "done"
         return f"✅ دریافت شد. لطفاً رسید پرداخت را برای ادمین {ADMIN_USER} ارسال کنید."
 
@@ -583,7 +609,9 @@ class GiftCardsMenuMessage(BaseMessage):
             ("google_play", "Google Play"),
             ("playstation", "PlayStation"),
             ("prepaid_card", "Prepaid Master/Visa"),
+            ("other_gift", "سایر گیفت‌کارت‌ها ⭐"),  # ← جدید
         ]
+
         for key, display in products:
             desc, details = _load_text(resources, key)
             self.add_button(
@@ -591,7 +619,7 @@ class GiftCardsMenuMessage(BaseMessage):
                 callback=ProductDetailMessage(navigation, display, desc, details, service_key=key),
             )
 
-        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
+        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back, new_row=True)
         self.add_button(label="🏠 خانه", callback=navigation.goto_home)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
@@ -615,7 +643,7 @@ class AccountsMenuMessage(BaseMessage):
             desc, details = _load_text(resources, key)
             self.add_button(display, callback=ProductDetailMessage(navigation, display, desc, details, service_key=key))
 
-        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
+        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back, new_row=True)
         self.add_button(label="🏠 خانه", callback=navigation.goto_home)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
@@ -623,23 +651,24 @@ class AccountsMenuMessage(BaseMessage):
 
 
 class PaymentsMenuMessage(BaseMessage):
-    LABEL = "💵 پرداخت‌های ارزی"
+    LABEL = "💵 پرداخت/دریافت ارزی"  # ← تغییر عنوان
 
     def __init__(self, navigation: MyNavigationHandler):
         super().__init__(navigation, label=self.LABEL, notification=False)
         resources = (ROOT_FOLDER.parent / "resources")
 
         payments = [
-            ("university_fee", "پرداخت شهریه دانشگاه"),
-            ("saas_purchase", "خرید سرویس‌های SaaS"),
-            ("flight_hotel", "بلیط هواپیما / هتل"),
-            ("fx_to_rial", "تبدیل درآمد ارزی به ریال"),
+            ("site_payment", "پرداخت در سایت مورد نظر"),   # ← جدید (درصدی +۵٪ با سِلکتور مبلغ)
+            ("fx_to_rial", "تبدیل درآمد ارزی به ریال"),    # ← تبدیل، درصدی +۵٪
+            # ("university_fee", "پرداخت شهریه دانشگاه"),
+            # ("saas_purchase", "خرید سرویس‌های SaaS"),
+            # ("flight_hotel", "بلیط هواپیما / هتل"),
         ]
         for key, display in payments:
             desc, details = _load_text(resources, key)
             self.add_button(display, callback=ProductDetailMessage(navigation, display, desc, details, service_key=key))
 
-        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
+        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back, new_row=True)
         self.add_button(label="🏠 خانه", callback=navigation.goto_home)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
@@ -666,7 +695,7 @@ class ServicesMenuMessage(BaseMessage):
             ),
         )
 
-        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
+        self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back, new_row=True)
         self.add_button(label="🏠 خانه", callback=navigation.goto_home)
 
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
