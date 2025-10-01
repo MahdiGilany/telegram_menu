@@ -27,6 +27,9 @@ import os
 import datetime
 import logging
 import time
+import asyncio
+import html
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
@@ -43,6 +46,8 @@ ROOT_FOLDER = Path(__file__).parent
 # ========= App Config =========
 ADMIN_USER = "@asll_pay"
 ACCOUNT_NO = os.getenv("ASLLPAY_ACCOUNT_NO", "—")
+ADMIN_CHAT_ID = 5375761406        # ← همین عددی که دادی
+# ADMIN_CHAT_ID = 104101121        # ← همین عددی که دادی
 
 # ========= Pricing =========
 # strategy.type ∈ {"fixed","percent","psn_region","prepaid_tier","quote_needed"}
@@ -138,9 +143,113 @@ class MyNavigationHandler(_BaseNav):
     async def goto_back(self) -> int:
         return await self.select_menu_button("Back")
 
+async def _notify_admin_giftcard(
+    bot,
+    admin_chat_id: int,
+    title: str,
+    region_label: str,
+    chosen_txt: str,
+    final_txt: str,
+    note_calc: str,
+    user_chat_id: Optional[int],
+    user_first: Optional[str] = None,
+):
+    username_str = None
+    try:
+        if user_chat_id:
+            chat = await bot.get_chat(user_chat_id)
+            if getattr(chat, "username", None):
+                username_str = f"@{chat.username}"
+            else:
+                username_str = "(no-username)"
+            if not user_first:
+                user_first = getattr(chat, "first_name", None)
+    except Exception:
+        username_str = username_str or "(unknown)"
+        user_first = user_first or "کاربر"
+
+    if user_chat_id:
+        user_link = f'<a href="tg://user?id={user_chat_id}">{html.escape(user_first or "کاربر")}</a>'
+        user_tail = f" ({username_str}) id={user_chat_id}"
+    else:
+        user_link = html.escape(user_first or "کاربر")
+        user_tail = f" ({username_str})"
+
+    note_lines = [
+        "🔔 پرداخت گیفت‌کارت ثبت شد",
+        f"• سرویس: {html.escape(title)}",
+        f"• ریجن: {region_label}",
+        f"• مبلغ انتخابی: {chosen_txt}",
+        f"• مبلغ پرداخت نهایی: {final_txt}",
+        f"• توضیح محاسبه: {html.escape(note_calc)}" if note_calc else "",
+        f"• کاربر: {user_link}{user_tail}",
+    ]
+    note_text = "\n".join([ln for ln in note_lines if ln])
+
+    await bot.send_message(
+        chat_id=admin_chat_id,
+        text=note_text,
+        parse_mode="HTML",
+        disable_notification=False,
+    )
+
+async def _notify_admin_payment(
+    bot,
+    admin_chat_id: int,
+    title: str,
+    amount_txt: str,
+    user_chat_id: Optional[int],
+    user_first: Optional[str] = None,
+):
+    """
+    username واقعی کاربر را با get_chat می‌گیرد تا قطعاً کامل باشد (مثل Mahdi749574).
+    سپس پیام کامل را برای ادمین می‌فرستد.
+    """
+    username_str = None
+    try:
+        if user_chat_id:
+            chat = await bot.get_chat(user_chat_id)  # ← Chat(username=..., first_name=..., ...)
+            # chat.username بدون @ است؛ اگر None بود، لینک کاربر را می‌سازیم
+            if getattr(chat, "username", None):
+                username_str = f"@{chat.username}"
+            else:
+                username_str = "(no-username)"
+            if not user_first:
+                user_first = getattr(chat, "first_name", None)
+    except Exception:
+        # اگر get_chat خطا داد، حداقل چیزی نشان بدهیم
+        username_str = username_str or "(unknown)"
+        user_first = user_first or "کاربر"
+
+    # لینک کلیک‌پذیر به پروفایل تلگرام کاربر
+    if user_chat_id:
+        user_link = f'<a href="tg://user?id={user_chat_id}">{html.escape(user_first or "کاربر")}</a>'
+        user_tail = f" ({username_str}) id={user_chat_id}"
+    else:
+        user_link = html.escape(user_first or "کاربر")
+        user_tail = f" ({username_str})"
+
+    note_text = (
+        "🔔 پرداخت جدید ثبت شد\n"
+        f"• سرویس: {html.escape(title)}\n"
+        f"• مبلغ: {amount_txt}\n"
+        f"• کاربر: {user_link}{user_tail}"
+    )
+
+    await bot.send_message(
+        chat_id=admin_chat_id,
+        text=note_text,
+        parse_mode="HTML",
+        disable_notification=False,
+    )
 
 class OrderSummaryMessage(BaseMessage):
-    """Inline final summary (inlined=True so it appears as an app message)."""
+    """
+    خلاصه نهایی سفارش (برای تمام سرویس‌های غیر گیفت‌کارت).
+    دکمه‌ها مثل گیفت‌کارت‌ها فقط «✅ واریز کردم» و «⌛ هنوز واریز نکردم» هستند.
+    بعد از «واریز کردم» هیچ منوی اضافه‌ای (سفارش مجدد/تماس با ادمین) نشان داده نمی‌شود؛
+    فقط پیام تأیید نمایش داده می‌شود و state در حالت خلاصه باقی می‌ماند تا کاربر دوباره همین مسیر را برود.
+    """
     def __init__(
         self,
         navigation: MyNavigationHandler,
@@ -149,7 +258,7 @@ class OrderSummaryMessage(BaseMessage):
         note: str,
         service_key: str,
         base_amount: Optional[float] = None,
-        extra: Optional[str] = None,
+        extra: Optional[str] = None,  # محتوای «اطلاعات بیشتر» در صورت نیاز
     ):
         super().__init__(navigation, label=f"order_summary:{service_key}", inlined=True, notification=True)
         self.title = title
@@ -159,10 +268,37 @@ class OrderSummaryMessage(BaseMessage):
         self.base_amount = base_amount
         self.extra = extra
 
-        # Inline summary: keep it simple, no navigation changes required here.
-        # (Inline messages are handled by app_message_button_callback)
-        self.keyboard = [[]]  # no buttons
+        # فقط همین دو دکمه مثل جریان گیفت‌کارت‌ها
+        self.keyboard = [
+            [MenuButton("✅ واریز کردم", callback=self._mark_paid, btype=ButtonType.MESSAGE)],
+            [MenuButton("⌛ هنوز واریز نکردم", callback=self._not_paid)],
+        ]
 
+    # ——— Actions: باید رشته برگردانند (برای inline buttons) ———
+    def _mark_paid(self) -> str:
+        amount_txt = _fmt_usd(self.price_usd) if self.price_usd is not None else "—"
+
+        user_chat_id = getattr(self.navigation, "chat_id", None)
+        user_first   = getattr(self.navigation, "first_name", None) or getattr(self.navigation, "user_first_name", None)
+
+        # تسک async: username واقعی را می‌گیرد و پیام را برای ادمین می‌فرستد
+        asyncio.create_task(_notify_admin_payment(
+            self.navigation._bot,
+            ADMIN_CHAT_ID,
+            self.title,
+            amount_txt,
+            user_chat_id,
+            user_first,
+        ))
+
+        tail = " همچنین مدارک مورد نیاز (از بخش «اطلاعات بیشتر») را هم برای ادمین ارسال کنید." if getattr(self, "extra", None) else ""
+        return f"✅ دریافت شد. لطفاً رسید پرداخت را برای ادمین {ADMIN_USER} ارسال کنید.{tail}"
+
+    def _not_paid(self) -> str:
+        """اعلام عدم واریز: پیام راهنما، در حالت خلاصه می‌مانیم."""
+        return "باشه! هر زمان پرداخت کردید، با «✅ واریز کردم» اطلاع بدهید و رسید را هم بفرستید."
+
+    # ——— Render ———
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         lines: List[str] = [f"<b>نهایی‌سازی سفارش — {self.title}</b>"]
         if self.base_amount is not None:
@@ -174,8 +310,6 @@ class OrderSummaryMessage(BaseMessage):
         else:
             lines.append(f"⛳ {self.note}")
             lines.append(f"برای ادامه و استعلام دقیق، با ادمین {ADMIN_USER} در ارتباط باشید.")
-        if self.extra:
-            lines.append(f"\nاطلاعات تکمیلی:\n{self.extra}")
         return "\n".join(lines)
 
 class AmountSelectorInline(BaseMessage):
@@ -245,22 +379,29 @@ class AmountSelectorInline(BaseMessage):
 
     # ---- Callbacks: paid / not paid (return TEXT only) ----
     def _mark_paid(self) -> str:
-        amount_txt = _fmt_usd(self._price) if self._price is not None else "—"
-        try:
-            # منشن ادمین برای نوتیف
-            self.navigation.send_message(
-                f"🔔 {ADMIN_USER} کاربر اعلام کرد «واریز کردم» برای «{self.title}» به مبلغ {amount_txt}.",
-                notification=True
-            )
-        except Exception as e:
-            logging.warning(f"Failed admin notify: {e}")
-        
-        # بعد از ارسال پیام، حالت برگرده به انتخاب مبلغ
-        self._mode = "pick"
-        self.selected_amount = None
-        self._price = None
-        self._note = ""
-        self.region_selected = None
+        final_txt  = _fmt_usd(self._price) if self._price is not None else "—"
+        chosen_txt = _fmt_usd(self.selected_amount) if self.selected_amount is not None else "—"
+        if self.region_prompt:
+            region_label = "🇺🇸 US" if self.region_selected == "US" else ("🌍 Other" if self.region_selected == "OTHER" else "—")
+        else:
+            region_label = "—"
+
+        user_chat_id = getattr(self.navigation, "chat_id", None)
+        user_first   = getattr(self.navigation, "first_name", None) or getattr(self.navigation, "user_first_name", None)
+
+        asyncio.create_task(_notify_admin_giftcard(
+            self.navigation._bot,
+            ADMIN_CHAT_ID,
+            self.title,
+            region_label,
+            chosen_txt,
+            final_txt,
+            self._note or "",
+            user_chat_id,
+            user_first,
+        ))
+
+        self._mode = "done"
         return f"✅ دریافت شد. لطفاً رسید پرداخت را برای ادمین {ADMIN_USER} ارسال کنید."
 
     def _not_paid(self) -> str:
