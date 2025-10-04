@@ -93,6 +93,36 @@ USD_HEADERS = {
 }
 _USD_CACHE = {"ts": 0, "rate": None}  # تومان بر هر 1 USD (با 1.3% اضافه)
 
+# — normalize & parse for manual amount input —
+_PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+_ARABIC_DIGITS  = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
+def _normalize_digits(s: str) -> str:
+    # تبدیل ارقام فارسی/عربی به لاتین + یکدست‌سازی جداکننده‌ها
+    s = (s or "").strip()
+    s = s.translate(_PERSIAN_DIGITS).translate(_ARABIC_DIGITS)
+    # حذف کاراکترهای پرکاربرد در متن‌های فارسی
+    s = s.replace(",", "").replace("٬", "").replace("،", "").replace(" ", "")
+    s = s.replace("تومان", "").replace("تومن", "").replace("tmn", "").replace("IRT", "")
+    s = s.replace("usd", "").replace("USD", "").replace("$", "")
+    return s
+
+def _parse_amount(text: str):
+    # خروجی: float یا None
+    t = _normalize_digits(text)
+    # فقط عدد و نقطه مجاز باشد
+    if not t or any(ch for ch in t if (not ch.isdigit() and ch != ".")):
+        return None
+    try:
+        val = float(t)
+        # حداقلِ منطقی؛ اگر لازم بود تغییر بده
+        if val <= 0:
+            return None
+        # گرد کردن منطقی برای دلار
+        return round(val, 2)
+    except Exception:
+        return None
+
 def _fmt_irt(amount_irt: float) -> str:
     try:
         n = int(round(amount_irt))
@@ -419,6 +449,26 @@ class AmountSelectorInline(BaseMessage):
         if await self.edit_message():
             self.is_alive()
 
+    async def text_input(self, text: str, context=None) -> None:
+        """
+        گرفتن مبلغِ ورودیِ دستی کاربر و رفتن به حالت خلاصه سفارش.
+        """
+        amt = _parse_amount(text)
+        if amt is None:
+            # ورودی نامعتبر: کاری نکن، UI همونجا می‌مونه (هیچ منطق دیگری تغییر نمی‌کند)
+            return
+
+        # تنظیم مبلغ انتخابی مثل دکمه‌های آماده
+        self.selected_amount = float(amt)
+        self._price, self._note = compute_total(
+            self.service_key,
+            base_amount=self.selected_amount,
+            region=self.region_selected if self.region_selected else None,
+        )
+        self._mode = "summary"
+        # رفرش UI با همون مکانیزم فعلی کلاس
+        await self.app_update_display()
+    
     # ---- Callbacks: Region selection ----
     def _make_set_region_cb(self, region_code: str):
         def _cb() -> str:
@@ -781,27 +831,21 @@ class LearningMenuMessage(BaseMessage):
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         return "راهنماها و نکات امنیتی را مطالعه کنید."
 
-
 class ContactMenuMessage(BaseMessage):
     LABEL = "پشتیبانی 👤"
 
     def __init__(self, navigation: MyNavigationHandler):
         super().__init__(navigation, label=self.LABEL, notification=False)
-        self.add_button("ارسال پیام به پشتیبانی", callback=self._contact, btype=ButtonType.MESSAGE)
-        self.add_button("تماس ادمین", callback=self._admin, btype=ButtonType.MESSAGE)
+
+        # دکمه‌ها: هر کدوم کاربر رو به یک ActionAppMessage با متن ثابت فوروارد می‌کند
+        self.add_button("📞 تماس تلفنی", callback=ActionAppMessage(navigation,"☎️ برای تماس تلفنی با پشتیبانی با شماره 02188922939 تماس بگیرید."))
+        self.add_button("💬 ارسال پیام به پشتیبانی", callback=ActionAppMessage(navigation,"💬 برای ارتباط با پشتیبانی در تلگرام به آیدی @Asll_pay پیام دهید."))
+
         self.add_button(label="⬅️ بازگشت", callback=navigation.goto_back)
         self.add_button(label="🏠 خانه", callback=navigation.goto_home)
-
-    def _contact(self) -> str:
-        return "پیام شما به پشتیبانی ارسال شد. در ساعات کاری پاسخ داده می‌شود."
-
-    def _admin(self) -> str:
-        return f"تماس فوری: {ADMIN_USER}"
-
+        
     def update(self, context: Optional[CallbackContext[BT, UD, CD, BD]] = None) -> str:
         return "راه‌های ارتباط با پشتیبانی را انتخاب کنید."
-
-
 class StartMessage(BaseMessage):
     LABEL = "start"
 
