@@ -48,7 +48,7 @@ ROOT_FOLDER = Path(__file__).parent
 
 # ========= App Config =========
 ADMIN_USER = "@asll_pay"
-ACCOUNT_NO = os.getenv("ASLLPAY_ACCOUNT_NO", "—")
+ACCOUNT_NO = os.getenv("ASLLPAY_ACCOUNT_NO", "6219861980968324")
 ADMIN_CHAT_ID = 5375761406        # ← همین عددی که دادی
 # ADMIN_CHAT_ID = 104101121        # ← همین عددی که دادی
 
@@ -399,7 +399,7 @@ class OrderSummaryMessage(BaseMessage):
             _irt = _usd_to_irt(self.price_usd)
             if _irt:
                 lines.append(f"{_fmt_irt(_irt)} (معادل تومانی)")
-            lines.append(f"\n✅ لطفاً مبلغ فوق را به شماره‌حساب زیر واریز کنید:\n<b>{ACCOUNT_NO}</b>")
+            lines.append(f"\n✅ لطفاً مبلغ فوق را به شماره‌حساب زیر به اسم هادوی واریز کنید:\n<b>{ACCOUNT_NO}</b>")
             lines.append(f"و سپس <b>رسید</b> را برای ادمین {ADMIN_USER} ارسال نمایید.")
         else:
             lines.append(f"⛳ {self.note}")
