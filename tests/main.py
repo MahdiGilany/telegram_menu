@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-api_key = os.getenv("ASLLPAY_API_KEY")
+api_key = "8182446297:AAFVGVfi12xhxDaqxpUPkHPPTxy5A5Cnmz4"
 
 def run() -> None:
     """Run the demo example."""
