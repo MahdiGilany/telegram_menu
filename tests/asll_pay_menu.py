@@ -30,6 +30,9 @@ import time
 import asyncio
 import html
 import re
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
@@ -62,13 +65,13 @@ PRICING: Dict[str, Dict[str, Any]] = {
     # Accounts / Fixed
     "paypal":       {"type": "fixed", "amount": 40.0},
     "mastercard":   {"type": "fixed", "amount": 130.0},
+    "wirex":        {"type": "fixed", "amount": 150.0},
 
     # Payments / Receipts
     "site_payment": {"type": "percent", "percent": 5.0},   # ← جدید: پرداخت در سایت مورد نظر (+۵٪)
     "fx_to_rial":   {"type": "percent", "percent": 5.0},   # ← تغییر از quote_needed به +۵٪
 
     # Others require quote
-    "wirex":        {"type": "quote_needed"},
     "wise":         {"type": "quote_needed"},
     "university_fee": {"type": "quote_needed"},
     "saas_purchase":  {"type": "quote_needed"},
@@ -79,6 +82,57 @@ PRICING: Dict[str, Dict[str, Any]] = {
 COMMON_DENOMS_SMALL = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100]
 PREPAID_DENOMS = [1, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 250]
 
+# ========= FX (USD→IRT) =========
+USD_API_URL = "https://brsapi.ir/Api/Market/Gold_Currency.php?key=BgbF9eDYAMyKLqm5haWIW82faLae6Xca"
+USD_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/118.0.0.0 Safari/537.36"
+    )
+}
+_USD_CACHE = {"ts": 0, "rate": None}  # تومان بر هر 1 USD (با 1.3% اضافه)
+
+def _fmt_irt(amount_irt: float) -> str:
+    try:
+        n = int(round(amount_irt))
+    except Exception:
+        n = amount_irt
+    return f"{n:,} تومان"
+
+def _fetch_usd_irt_rate(markup_pct: float = 1.3, cache_sec: int = 120) -> Optional[float]:
+    """
+    نرخ دلار آزاد (تومان) از API، با افزودن markup_pct درصد.
+    کش سبک برای جلوگیری از ریکوئست زیاد.
+    """
+    now = int(time.time())
+    if _USD_CACHE["rate"] and now - _USD_CACHE["ts"] < cache_sec:
+        return _USD_CACHE["rate"]
+
+    sess = requests.Session()
+    retry = Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["GET"])
+    sess.mount("https://", HTTPAdapter(max_retries=retry))
+    try:
+        resp = sess.get(USD_API_URL, headers=USD_HEADERS, timeout=8)
+        if resp.status_code != 200:
+            return _USD_CACHE["rate"]  # از کش برگرده اگر داشتیم
+        data = resp.json()
+        usd = next((it for it in data.get("currency", []) if it.get("symbol") == "USD"), None)
+        if not usd:
+            return _USD_CACHE["rate"]
+        base = float(usd.get("price"))
+        rate = base * (1.0 + (markup_pct / 100.0))  # +1.3%
+        _USD_CACHE["rate"] = rate
+        _USD_CACHE["ts"] = now
+        return rate
+    except Exception:
+        return _USD_CACHE["rate"]  # اگر قبلاً داشتیم، همان
+
+def _usd_to_irt(amount_usd: Optional[float]) -> Optional[float]:
+    if amount_usd is None:
+        return None
+    rate = _fetch_usd_irt_rate()
+    return (amount_usd * rate) if rate else None
 
 def _fmt_usd(amount: float) -> str:
     return f"${amount:,.2f}"
@@ -183,7 +237,7 @@ async def _notify_admin_giftcard(
         user_tail = f" ({username_str})"
 
     note_lines = [
-        "🔔 پرداخت گیفت‌کارت ثبت شد",
+        "🔔 پرداخت ثبت شد",
         f"• سرویس: {html.escape(title)}",
         f"• ریجن: {region_label}",
         f"• مبلغ انتخابی: {chosen_txt}",
@@ -312,6 +366,9 @@ class OrderSummaryMessage(BaseMessage):
             lines.append(f"مبلغ انتخابی: {_fmt_usd(self.base_amount)}")
         if self.price_usd is not None:
             lines.append(f"<b>مبلغ پرداخت نهایی:</b> {_fmt_usd(self.price_usd)} ({self.note})")
+            _irt = _usd_to_irt(self.price_usd)
+            if _irt:
+                lines.append(f"{_fmt_irt(_irt)} (معادل تومانی)")
             lines.append(f"\n✅ لطفاً مبلغ فوق را به شماره‌حساب زیر واریز کنید:\n<b>{ACCOUNT_NO}</b>")
             lines.append(f"و سپس <b>رسید</b> را برای ادمین {ADMIN_USER} ارسال نمایید.")
         else:
@@ -471,6 +528,9 @@ class AmountSelectorInline(BaseMessage):
                 lines.append(f"مبلغ انتخابی: {_fmt_usd(self.selected_amount)}")
             if self._price is not None:
                 lines.append(f"<b>مبلغ پرداخت نهایی:</b> {_fmt_usd(self._price)} ({self._note})")
+                _irt = _usd_to_irt(self._price)
+                if _irt:
+                    lines.append(f"{_fmt_irt(_irt)} (معادل تومانی)")
                 lines.append(f"\n✅ لطفاً مبلغ فوق را به شماره‌حساب زیر واریز کنید:\n<b>{ACCOUNT_NO}</b>")
                 lines.append(f"و سپس <b>رسید</b> را برای ادمین {ADMIN_USER} ارسال نمایید.")
             else:
